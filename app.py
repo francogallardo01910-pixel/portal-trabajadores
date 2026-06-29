@@ -15,8 +15,8 @@ st.set_page_config(
 # CONEXIÓN SUPABASE
 # -----------------------------------
 
-SUPABASE_URL = st.secrets["SUPABASE_URL"]
-SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+SUPABASE_URL = st.secrets["SUPABASE_URL"].strip().replace("/rest/v1/", "").replace("/rest/v1", "")
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"].strip()
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
