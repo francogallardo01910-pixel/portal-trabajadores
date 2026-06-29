@@ -1,4 +1,9 @@
 import streamlit as st
+from supabase import create_client
+
+# -----------------------------------
+# CONFIGURACIÓN
+# -----------------------------------
 
 st.set_page_config(
     page_title="ALFA Control Portal",
@@ -6,31 +11,64 @@ st.set_page_config(
     layout="centered"
 )
 
+# -----------------------------------
+# CONEXIÓN SUPABASE
+# -----------------------------------
+
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# -----------------------------------
+# TÍTULO
+# -----------------------------------
+
 st.title("📦 ALFA Control Portal")
-st.subheader("Portal del Trabajador")
 
-st.info("Primera versión del portal funcionando correctamente.")
+st.subheader("Solicitud mensual de alimento")
 
-rut = st.text_input("Ingrese su RUT", placeholder="Ej: 12345678-9")
+st.divider()
+
+# -----------------------------------
+# BUSCAR TRABAJADOR
+# -----------------------------------
+
+rut = st.text_input(
+    "Ingrese su RUT",
+    placeholder="Ej: 12345678-9"
+)
 
 if rut:
-    st.success(f"RUT ingresado: {rut}")
 
-    st.write("Aquí después conectaremos con Supabase para buscar el trabajador.")
-
-    producto_1 = st.selectbox(
-        "Alimento 1",
-        ["Alfa Adulto 25 kg", "Alfa Senior 25 kg", "Alfa Cachorro 20 kg"]
+    respuesta = (
+        supabase
+        .table("trabajadores")
+        .select("*")
+        .eq("rut", rut)
+        .execute()
     )
 
-    cantidad_1 = st.number_input(
-        "Cantidad alimento 1",
-        min_value=1,
-        max_value=3,
-        step=1
-    )
+    if len(respuesta.data) == 0:
 
-    if st.button("Enviar solicitud"):
-        st.success("Solicitud registrada en modo prueba.")
-        st.write("Producto:", producto_1)
-        st.write("Cantidad:", cantidad_1)
+        st.error("Trabajador no encontrado")
+
+    else:
+
+        trabajador = respuesta.data[0]
+
+        st.success("Trabajador encontrado")
+
+        st.write("### Nombre")
+
+        st.write(trabajador["nombre"])
+
+        st.write("### Estado")
+
+        if trabajador["activo"]:
+
+            st.success("ACTIVO")
+
+        else:
+
+            st.error("INACTIVO")
