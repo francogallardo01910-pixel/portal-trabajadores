@@ -1,12 +1,11 @@
 from datetime import datetime
 from io import BytesIO
-
 import pandas as pd
+import requests
 import streamlit as st
-from supabase import create_client
 
 st.set_page_config(
-    page_title="Portal Trabajadores ALFA Control",
+    page_title="ALFA Control Portal",
     page_icon="📦",
     layout="centered",
 )
@@ -14,23 +13,34 @@ st.set_page_config(
 # =============================
 # CONFIGURACIÓN
 # =============================
-SUPABASE_URL = st.secrets["SUPABASE_URL"].strip().replace("/rest/v1/", "").replace("/rest/v1", "")
-SUPABASE_KEY = st.secrets["SUPABASE_KEY"].strip()
+SUPABASE_URL = st.secrets.get("SUPABASE_URL", "").strip().rstrip("/").replace("/rest/v1", "")
+SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", "").strip()
 ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "1234")
+MODO_PRUEBA = st.secrets.get("MODO_PRUEBA", "SI").upper() == "SI"
 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+if not SUPABASE_URL or not SUPABASE_KEY:
+    st.error("Faltan SUPABASE_URL o SUPABASE_KEY en los Secrets de Streamlit.")
+    st.stop()
+
+REST_URL = f"{SUPABASE_URL}/rest/v1"
+HEADERS = {
+    "apikey": SUPABASE_KEY,
+    "Authorization": f"Bearer {SUPABASE_KEY}",
+    "Content-Type": "application/json",
+    "Prefer": "return=representation",
+}
 
 # =============================
-# ESTILOS
+# ESTILO
 # =============================
 st.markdown(
     """
     <style>
-    .main { background-color: #f7faf8; }
-    .block-container { padding-top: 1.5rem; max-width: 760px; }
-    .titulo { text-align:center; color:#166534; font-size:34px; font-weight:800; }
-    .subtitulo { text-align:center; color:#475569; font-size:17px; margin-bottom:20px; }
-    .card { background:white; padding:20px; border-radius:18px; box-shadow:0 2px 12px rgba(0,0,0,0.08); margin-bottom:15px; }
+    .main { background-color:#f7faf8; }
+    .block-container { max-width: 820px; padding-top: 1.2rem; }
+    .titulo { text-align:center; color:#0B6B3A; font-size:34px; font-weight:800; }
+    .subtitulo { text-align:center; color:#475569; font-size:17px; margin-bottom:24px; }
+    .card { background:white; padding:22px; border-radius:18px; box-shadow:0 2px 14px rgba(0,0,0,.08); margin-bottom:18px; }
     .ok { color:#166534; font-weight:700; }
     .warn { color:#b45309; font-weight:700; }
     </style>
@@ -39,103 +49,127 @@ st.markdown(
 )
 
 # =============================
-# FUNCIONES
+# FUNCIONES SUPABASE REST
 # =============================
+def supabase_get(tabla: str, params: dict | None = None):
+    r = requests.get(f"{REST_URL}/{tabla}", headers=HEADERS, params=params or {}, timeout=25)
+    if r.status_code >= 400:
+        raise RuntimeError(f"Error GET {tabla}: {r.text}")
+    return r.json()
+
+
+def supabase_post(tabla: str, data: dict):
+    r = requests.post(f"{REST_URL}/{tabla}", headers=HEADERS, json=data, timeout=25)
+    if r.status_code >= 400:
+        raise RuntimeError(f"Error POST {tabla}: {r.text}")
+    return r.json()
+
+
+def supabase_patch(tabla: str, params: dict, data: dict):
+    r = requests.patch(f"{REST_URL}/{tabla}", headers=HEADERS, params=params, json=data, timeout=25)
+    if r.status_code >= 400:
+        raise RuntimeError(f"Error PATCH {tabla}: {r.text}")
+    return r.json()
+
+
 def mes_actual() -> str:
     return datetime.now().strftime("%Y-%m")
 
 
 def solicitudes_abiertas() -> bool:
-    return True
+    if MODO_PRUEBA:
+        return True
+    return datetime.now().day <= 10
 
 
 def obtener_trabajador(rut: str):
-    resp = (
-        supabase.table("trabajadores")
-        .select("*")
-        .eq("rut", rut)
-        .eq("activo", True)
-        .execute()
+    rut = rut.strip()
+    data = supabase_get(
+        "trabajadores",
+        {
+            "select": "rut,nombre,activo",
+            "rut": f"eq.{rut}",
+            "activo": "eq.true",
+            "limit": "1",
+        },
     )
-    return resp.data[0] if resp.data else None
+    return data[0] if data else None
 
 
 def obtener_productos():
-    resp = (
-        supabase.table("productos_alimento")
-        .select("*")
-        .eq("activo", True)
-        .execute()
+    data = supabase_get(
+        "productos_alimento",
+        {
+            "select": "producto,formato,activo",
+            "activo": "eq.true",
+            "order": "producto.asc",
+        },
     )
     productos = []
-    for p in resp.data:
-        producto = str(p.get("producto") or "").strip()
-        formato = str(p.get("formato") or "").strip()
+    for p in data:
+        producto = (p.get("producto") or "").strip()
+        formato = (p.get("formato") or "").strip()
         nombre = f"{producto} {formato}".strip()
         if nombre:
             productos.append(nombre)
     return productos
 
 
-def ya_solicito(rut: str, mes: str) -> bool:
-    resp = (
-        supabase.table("solicitudes_alimento")
-        .select("id")
-        .eq("rut", rut)
-        .eq("mes", mes)
-        .execute()
+def solicitud_existente(rut: str, mes: str):
+    data = supabase_get(
+        "solicitudes_alimento",
+        {
+            "select": "*",
+            "rut": f"eq.{rut}",
+            "mes": f"eq.{mes}",
+            "limit": "1",
+        },
     )
-    return bool(resp.data)
+    return data[0] if data else None
 
 
-def insertar_solicitud(nombre: str, rut: str, items: list[dict]):
-    data = {
-        "mes": mes_actual(),
-        "rut": rut,
-        "nombre": nombre,
-        "estado": "Pendiente",
-        "producto_1": items[0]["producto"] if len(items) > 0 else None,
-        "cantidad_1": items[0]["cantidad"] if len(items) > 0 else None,
-        "producto_2": items[1]["producto"] if len(items) > 1 else None,
-        "cantidad_2": items[1]["cantidad"] if len(items) > 1 else None,
-        "producto_3": items[2]["producto"] if len(items) > 2 else None,
-        "cantidad_3": items[2]["cantidad"] if len(items) > 2 else None,
-    }
-    return supabase.table("solicitudes_alimento").insert(data).execute()
+def obtener_solicitudes(mes: str | None = None):
+    params = {"select": "*", "order": "fecha.desc"}
+    if mes:
+        params["mes"] = f"eq.{mes}"
+    return supabase_get("solicitudes_alimento", params)
 
 
-def obtener_solicitudes():
-    resp = (
-        supabase.table("solicitudes_alimento")
-        .select("*")
-        .order("fecha", desc=True)
-        .execute()
-    )
-    return resp.data or []
+def limpiar_rut(rut: str) -> str:
+    return rut.strip().replace(".", "").upper()
 
 
-def df_resumen_productos(df: pd.DataFrame) -> pd.DataFrame:
-    filas = []
-    for _, r in df.iterrows():
-        for i in [1, 2, 3]:
-            prod = r.get(f"producto_{i}")
-            cant = r.get(f"cantidad_{i}")
-            if pd.notna(prod) and prod and pd.notna(cant):
-                filas.append({"Producto": prod, "Cantidad": int(cant)})
-    if not filas:
-        return pd.DataFrame(columns=["Producto", "Total solicitado"])
-    tmp = pd.DataFrame(filas)
-    return tmp.groupby("Producto", as_index=False)["Cantidad"].sum().rename(columns={"Cantidad": "Total solicitado"})
+def df_solicitudes(data):
+    if not data:
+        return pd.DataFrame()
+    df = pd.DataFrame(data)
+    columnas = [
+        "id", "fecha", "mes", "rut", "nombre", "producto_1", "cantidad_1",
+        "producto_2", "cantidad_2", "producto_3", "cantidad_3", "estado"
+    ]
+    for col in columnas:
+        if col not in df.columns:
+            df[col] = ""
+    return df[columnas]
 
 
-def crear_excel(df: pd.DataFrame) -> bytes:
+def excel_bytes(df: pd.DataFrame) -> bytes:
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Solicitudes")
-        resumen = df_resumen_productos(df)
-        resumen.to_excel(writer, index=False, sheet_name="Resumen productos")
-    output.seek(0)
-    return output.read()
+        if not df.empty:
+            resumen = []
+            for _, row in df.iterrows():
+                for n in [1, 2, 3]:
+                    prod = row.get(f"producto_{n}")
+                    cant = row.get(f"cantidad_{n}")
+                    if pd.notna(prod) and str(prod).strip() and pd.notna(cant):
+                        resumen.append({"Producto": prod, "Cantidad": int(cant)})
+            if resumen:
+                pd.DataFrame(resumen).groupby("Producto", as_index=False)["Cantidad"].sum().to_excel(
+                    writer, index=False, sheet_name="Resumen por producto"
+                )
+    return output.getvalue()
 
 # =============================
 # ENCABEZADO
@@ -145,103 +179,126 @@ st.markdown('<div class="subtitulo">Solicitud mensual de alimento para trabajado
 
 menu = st.sidebar.radio("Menú", ["Trabajador", "Administrador"])
 
+st.info("Las solicitudes se reciben del día 1 al día 10. El retiro será el día 15.")
+if MODO_PRUEBA:
+    st.warning("Modo prueba activo: el portal está abierto aunque no sea día 1 al 10.")
+
 # =============================
 # PORTAL TRABAJADOR
 # =============================
 if menu == "Trabajador":
-    st.info("Las solicitudes se reciben del día 1 al día 10. El retiro será el día 15.")
-
     if not solicitudes_abiertas():
         st.warning("Las solicitudes de este mes ya fueron cerradas. Consulte nuevamente el próximo mes.")
         st.stop()
 
-    rut = st.text_input("Ingrese su RUT", placeholder="Ej: 12345678-9").strip()
+    rut = limpiar_rut(st.text_input("Ingrese su RUT", placeholder="Ej: 12345678-9"))
 
     if rut:
-        trabajador = obtener_trabajador(rut)
+        try:
+            trabajador = obtener_trabajador(rut)
+        except Exception as e:
+            st.error("No se pudo conectar con la base de datos. Revise la configuración de Supabase.")
+            st.exception(e)
+            st.stop()
+
         if not trabajador:
             st.error("RUT no encontrado o trabajador inactivo.")
             st.stop()
 
-        nombre = trabajador.get("nombre", "")
-        st.success(f"Bienvenido/a: {nombre}")
+        nombre = trabajador["nombre"]
+        st.success(f"Bienvenido/a {nombre}")
 
-        if ya_solicito(rut, mes_actual()):
+        mes = mes_actual()
+        existente = solicitud_existente(rut, mes)
+        if existente:
             st.warning("Usted ya realizó su solicitud este mes.")
+            st.write("Estado:", existente.get("estado", "Pendiente"))
             st.stop()
 
         productos = obtener_productos()
         if not productos:
-            st.error("No hay productos activos cargados. Revise Supabase.")
+            st.error("No hay productos activos cargados en Supabase.")
             st.stop()
 
-        cantidad_alimentos = st.selectbox("¿Cuántos alimentos quiere solicitar?", [1, 2, 3])
+        st.markdown("### 📦 Seleccione hasta 3 alimentos")
+        st.caption("Cada alimento permite máximo 3 sacos. Pueden ser iguales o diferentes.")
 
-        items = []
-        for i in range(1, cantidad_alimentos + 1):
-            st.markdown(f"### Alimento {i}")
-            producto = st.selectbox(f"Producto {i}", productos, key=f"producto_{i}")
-            cantidad = st.number_input(
-                f"Cantidad {i} (máximo 3 sacos)",
-                min_value=1,
-                max_value=3,
-                step=1,
-                key=f"cantidad_{i}",
-            )
-            items.append({"producto": producto, "cantidad": int(cantidad)})
-
-        confirmar = st.checkbox("Confirmo que los datos ingresados son correctos")
+        solicitudes = []
+        for i in range(1, 4):
+            with st.expander(f"Alimento {i}", expanded=(i == 1)):
+                usar = True if i == 1 else st.checkbox(f"Agregar alimento {i}", key=f"usar_{i}")
+                if usar:
+                    producto = st.selectbox(f"Producto {i}", productos, key=f"producto_{i}")
+                    cantidad = st.number_input(f"Cantidad {i}", min_value=1, max_value=3, step=1, key=f"cantidad_{i}")
+                    solicitudes.append((producto, int(cantidad)))
 
         if st.button("Enviar solicitud", type="primary"):
-            if not confirmar:
-                st.error("Debe confirmar los datos antes de enviar.")
-            else:
-                insertar_solicitud(nombre, rut, items)
+            data = {
+                "mes": mes,
+                "rut": rut,
+                "nombre": nombre,
+                "producto_1": solicitudes[0][0] if len(solicitudes) >= 1 else None,
+                "cantidad_1": solicitudes[0][1] if len(solicitudes) >= 1 else None,
+                "producto_2": solicitudes[1][0] if len(solicitudes) >= 2 else None,
+                "cantidad_2": solicitudes[1][1] if len(solicitudes) >= 2 else None,
+                "producto_3": solicitudes[2][0] if len(solicitudes) >= 3 else None,
+                "cantidad_3": solicitudes[2][1] if len(solicitudes) >= 3 else None,
+                "estado": "Pendiente",
+            }
+            try:
+                supabase_post("solicitudes_alimento", data)
                 st.success("Solicitud enviada correctamente. Retiro programado para el día 15.")
                 st.balloons()
+            except Exception as e:
+                st.error("No se pudo guardar la solicitud.")
+                st.exception(e)
 
 # =============================
 # PANEL ADMINISTRADOR
 # =============================
 if menu == "Administrador":
-    st.subheader("Panel administrador")
     clave = st.text_input("Clave administrador", type="password")
-
     if clave != ADMIN_PASSWORD:
-        st.info("Ingrese la clave para ver las solicitudes.")
+        st.info("Ingrese la clave para acceder al panel administrador.")
         st.stop()
 
-    datos = obtener_solicitudes()
-    if not datos:
-        st.warning("Todavía no hay solicitudes registradas.")
+    st.markdown("### 📊 Panel administrador")
+    mes = st.text_input("Mes a revisar", value=mes_actual(), help="Formato YYYY-MM")
+
+    try:
+        data = obtener_solicitudes(mes)
+    except Exception as e:
+        st.error("No se pudieron cargar las solicitudes.")
+        st.exception(e)
         st.stop()
 
-    df = pd.DataFrame(datos)
+    df = df_solicitudes(data)
+    st.write(f"Solicitudes encontradas: {len(df)}")
+    st.dataframe(df, use_container_width=True)
 
-    meses = sorted(df["mes"].dropna().unique().tolist(), reverse=True)
-    mes_sel = st.selectbox("Filtrar por mes", meses)
-    df_filtrado = df[df["mes"] == mes_sel].copy()
+    if not df.empty:
+        filas_resumen = []
+        for _, row in df.iterrows():
+            for n in [1, 2, 3]:
+                prod = row.get(f"producto_{n}")
+                cant = row.get(f"cantidad_{n}")
+                if pd.notna(prod) and str(prod).strip() and pd.notna(cant):
+                    filas_resumen.append({"Producto": prod, "Cantidad": int(cant)})
+        if filas_resumen:
+            resumen = pd.DataFrame(filas_resumen).groupby("Producto", as_index=False)["Cantidad"].sum()
+            st.markdown("### Resumen por producto")
+            st.dataframe(resumen, use_container_width=True)
 
-    st.metric("Solicitudes", len(df_filtrado))
+        st.download_button(
+            "📥 Descargar Excel",
+            data=excel_bytes(df),
+            file_name=f"solicitudes_alimento_{mes}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
-    resumen = df_resumen_productos(df_filtrado)
-    st.subheader("Resumen por producto")
-    st.dataframe(resumen, use_container_width=True)
-
-    st.subheader("Detalle de solicitudes")
-    columnas = [
-        "fecha", "mes", "rut", "nombre", "estado",
-        "producto_1", "cantidad_1", "producto_2", "cantidad_2", "producto_3", "cantidad_3"
-    ]
-    columnas = [c for c in columnas if c in df_filtrado.columns]
-    st.dataframe(df_filtrado[columnas], use_container_width=True)
-
-    excel = crear_excel(df_filtrado[columnas])
-    st.download_button(
-        "Descargar Excel",
-        data=excel,
-        file_name=f"solicitudes_alimento_{mes_sel}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
-
-    st.caption("Para marcar entregado por ahora se puede editar el estado directamente en Supabase. En la siguiente versión agregamos botón desde este panel.")
+        st.markdown("### Marcar como entregado")
+        ids = df["id"].astype(str).tolist()
+        id_sel = st.selectbox("Seleccione ID", ids)
+        if st.button("Marcar entregado"):
+            supabase_patch("solicitudes_alimento", {"id": f"eq.{id_sel}"}, {"estado": "Entregado"})
+            st.success("Solicitud marcada como entregada. Actualice la página para ver el cambio.")
