@@ -46,7 +46,7 @@ def mes_actual() -> str:
 
 
 def solicitudes_abiertas() -> bool:
-    return datetime.now().day <= 10
+    return True
 
 
 def obtener_trabajador(rut: str):
