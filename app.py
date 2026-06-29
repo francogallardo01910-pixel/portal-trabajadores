@@ -51,7 +51,7 @@ def solicitudes_abiertas() -> bool:
 
 def obtener_trabajador(rut: str):
     resp = (
-        supabase.table("public.trabajadores")
+        supabase.table("trabajadores")
         .select("*")
         .eq("rut", rut)
         .eq("activo", True)
